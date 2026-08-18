@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Logística Simples - Controle de Estoque Inteligente</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brandDarkBlue: '#0F2C59',
+                        brandLightBlue: '#1D4ED8',
+                        brandGreen: '#2E7D32',
+                        brandLightGreen: '#E8F5E9',
+                        bgGray: '#F8FAFC'
+                    },
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; transition: background-color 0.3s; -webkit-tap-highlight-color: transparent; }
+        .fade-in { animation: fadeIn 0.4s ease forwards; }
+        @keyframes fadeIn {
+            from { opacity:0; transform:translateY(10px); }
+            to { opacity:1; transform:translateY(0); }
+        }
+        .responsive-table {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        @media print {
+            body { background: white !important; padding: 0; color: black !important; }
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
+            .border { border: 1px solid #ddd !important; }
+            tr { page-break-inside: avoid; }
+        }
+        .print-only { display: none; }
+    </style>
+</head>
+
+<body class="bg-[#F8FAFC] text-gray-800 dark:bg-gray-900 dark:text-gray-100 min-h-screen">
+
+    <div id="print-area" class="print-only max-w-4xl mx-auto p-4"></div>
+    
+    <div id="app" class="no-print max-w-4xl mx-auto min-h-screen flex flex-col justify-between p-4 sm:p-8"></div>
+
+    <script>
+        // === ESTADO DO SISTEMA ===
+        let perfilGlobal = localStorage.getItem('perfilGlobal') || '';
+        let schoolGlobal = ''; 
+        let usuarioCadastrado = localStorage.getItem('usuarioCadastrado') || 'admin@admin.com'; 
+        let senhaCadastrada = localStorage.getItem('senhaCadastrada') || '123';
+        
+        let limiteEstoqueBaixo = parseInt(localStorage.getItem('limiteEstoqueBaixo')) || 10; 
+        let modoEscuroAtivo = localStorage.getItem('modoEscuroAtivo') === 'true';
+        let notificacoesAtivas = localStorage.getItem('notificacoesAtivas') !== 'false';
+
+        // BANCO DE DADOS LOCAL PERSISTIDO
+        let dbProdutos = JSON.parse(localStorage.getItem('dbProdutos')) || [];
+        let dbCategorias = JSON.parse(localStorage.getItem('dbCategorias')) || []; 
+        let dbFornecedores = JSON.parse(localStorage.getItem('dbFornecedores')) || [];
+        let dbMovimentacoes = JSON.parse(localStorage.getItem('dbMovimentacoes')) || [];
+
+        // FUNÇÃO DE PERSISTÊNCIA GERAL
+        function salvarBanco() {
+            localStorage.setItem('usuarioCadastrado', usuarioCadastrado);
+            localStorage.setItem('senhaCadastrada', senhaCadastrada);
+            localStorage.setItem('perfilGlobal', perfilGlobal);
+            localStorage.setItem('limiteEstoqueBaixo', limiteEstoqueBaixo);
+            localStorage.setItem('modoEscuroAtivo', modoEscuroAtivo);
+            localStorage.setItem('notificacoesAtivas', notificacoesAtivas);
+            
+            localStorage.setItem('dbProdutos', JSON.stringify(dbProdutos));
+            localStorage.setItem('dbCategorias', JSON.stringify(dbCategorias));
+            localStorage.setItem('dbFornecedores', JSON.stringify(dbFornecedores));
+            localStorage.setItem('dbMovimentacoes', JSON.stringify(dbMovimentacoes));
+        }
+
+        function aplicarTema() {
+            if (modoEscuroAtivo) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        }
+
+        function toggleTema() {
+            modoEscuroAtivo = !modoEscuroAtivo;
+            salvarBanco();
+            aplicarTema();
+            renderizarConfiguracoes();
+        }
+
+        function atualizarStatusProdutos() {
+            if (!dbProdutos) return;
+            dbProdutos.forEach(p => {
+                p.status = p.qtd > limiteEstoqueBaixo ? 'OK' : 'Baixo';
+                p.statusCor = p.qtd > limiteEstoqueBaixo ? 'green' : 'red';
+            });
+            salvarBanco();
+        }
+
+        function mostrarMensagem(msg) {
+            alert(msg);
+        }
+
+        // ================= FUNÇÕES DE MOVIMENTAÇÃO POR NOME =================
+
+        function darEntradaPorNome(nomeProduto, quantidade) {
+            const nomeLimpo = nomeProduto.trim().toLowerCase();
+            const produto = dbProdutos.find(p => p.nome.trim().toLowerCase() === nomeLimpo);
+
+            if (!produto) {
+                mostrarMensagem(`Produto "${nomeProduto}" não encontrado!`);
+                return false;
+            }
+
+            produto.qtd += quantidade;
+            dbMovimentacoes.push({
+                tipo: 'Entrada Direta',
+                produto: produto.nome,
+                qtd: quantidade,
+                data: new Date().toLocaleDateString('pt-BR')
+            });
+
+            atualizarStatusProdutos();
+            salvarBanco();
+            mostrarMensagem(`Entrada de ${quantidade} un. realizada com sucesso para "${produto.nome}"!`);
+            return true;
+        }
+
+        function darBaixaPorNome(nomeProduto, quantidade) {
+            const nomeLimpo = nomeProduto.trim().toLowerCase();
+            const produto = dbProdutos.find(p => p.nome.trim().toLowerCase() === nomeLimpo);
+
+            if (!produto) {
+                mostrarMensagem(`Produto "${nomeProduto}" não encontrado!`);
+                return false;
+            }
+
+            if (produto.qtd < quantidade) {
+                mostrarMensagem(`Estoque insuficiente! O produto "${produto.nome}" possui apenas ${produto.qtd} un.`);
+                return false;
+            }
+
+            produto.qtd -= quantidade;
+            dbMovimentacoes.push({
+                tipo: 'Saída Direta',
+                produto: produto.nome,
+                qtd: quantidade,
+                data: new Date().toLocaleDateString('pt-BR')
+            });
+
+            atualizarStatusProdutos();
+            salvarBanco();
+            mostrarMensagem(`Baixa de ${quantidade} un. realizada com sucesso para "${produto.nome}"!`);
+            return true;
+        }
+
+        function abrirModalMovimentacao() {
+            const opcoesDataList = dbProdutos.map(p => `<option value="${p.nome}">`).join('');
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-xl font-bold mb-4 text-brandDarkBlue dark:text-white">Movimentação por Nome</h2>
+                <p class="text-xs text-gray-400 mb-6">Adicione entradas ou dê baixas rápidas sem precisar editar o produto.</p>
+
+                <datalist id="lista-produtos-sugeridos">${opcoesDataList}</datalist>
+
+                <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Nome do Produto</label>
+                <input id="movNome" list="lista-produtos-sugeridos" placeholder="Digite ou selecione o nome..." class="w-full p-3 border rounded-xl mb-4 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+
+                <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Quantidade</label>
+                <input id="movQtd" type="number" min="1" placeholder="Quantidade" class="w-full p-3 border rounded-xl mb-6 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+
+                <div class="grid grid-cols-2 gap-3 mb-3">
+                    <button onclick="executarMovimentacao('entrada')" class="bg-brandGreen hover:bg-opacity-90 text-white p-3 rounded-xl font-bold shadow-md">
+                        <i class="fas fa-plus-circle mr-1"></i> Entrada
+                    </button>
+                    <button onclick="executarMovimentacao('baixa')" class="bg-red-600 hover:bg-opacity-90 text-white p-3 rounded-xl font-bold shadow-md">
+                        <i class="fas fa-minus-circle mr-1"></i> Baixa
+                    </button>
+                </div>
+                <button onclick="entrarSistema()" class="w-full text-gray-400 mt-2 font-semibold">Voltar</button>
+            </div>`;
+        }
+
+        function executarMovimentacao(tipo) {
+            const nome = document.getElementById('movNome').value;
+            const qtd = parseInt(document.getElementById('movQtd').value);
+
+            if (!nome || isNaN(qtd) || qtd <= 0) {
+                mostrarMensagem('Por favor, informe um nome válido e uma quantidade maior que zero.');
+                return;
+            }
+
+            let sucesso = false;
+            if (tipo === 'entrada') {
+                sucesso = darEntradaPorNome(nome, qtd);
+            } else if (tipo === 'baixa') {
+                sucesso = darBaixaPorNome(nome, qtd);
+            }
+
+            if (sucesso) {
+                entrarSistema();
+            }
+        }
+
+        // ================= TELA INICIAL =================
+        function telaInicial() {
+            aplicarTema();
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in flex flex-col items-center pt-8 flex-grow w-full max-w-md mx-auto">
+                <div class="text-center mb-6">
+                    <div class="inline-flex items-center justify-center w-24 h-20 bg-brandDarkBlue text-white rounded-2xl shadow-md mb-4 relative">
+                        <i class="fas fa-school text-4xl"></i>
+                        <span class="absolute bottom-2 right-2 w-5 h-5 bg-[#2E7D32] rounded-full flex items-center justify-center text-[10px] font-bold">L</span>
+                    </div>
+                    <h1 class="text-3xl font-extrabold tracking-tight text-brandDarkBlue dark:text-white">
+                        Logística <span class="text-brandGreen">Simples</span>
+                    </h1>
+                    <p class="text-sm font-semibold text-gray-400 mt-1 uppercase tracking-wider">Controle de Estoque Inteligente</p>
+                </div>
+
+                <div class="w-full flex items-center justify-center gap-4 my-4">
+                    <div class="h-[1px] bg-gray-200 dark:bg-gray-700 flex-grow"></div>
+                    <i class="fas fa-box-open text-brandGreen text-lg opacity-60"></i>
+                    <div class="h-[1px] bg-gray-200 dark:bg-gray-700 flex-grow"></div>
+                </div>
+
+                <p class="text-gray-500 dark:text-gray-400 text-sm font-medium mb-6">Selecione seu perfil de acesso</p>
+
+                <div class="w-full space-y-4 mb-8">
+                    <button onclick="abrirLogin('Gestor')" class="w-full flex items-center justify-between p-5 bg-brandDarkBlue text-white rounded-2xl shadow-md border-l-4 border-brandGreen hover:scale-[1.01] active:scale-[0.99] transition-all text-left">
+                        <div class="flex items-center gap-4">
+                            <div class="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-xl">
+                                <i class="fas fa-user-tie"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-bold text-lg leading-tight">Gestor</h3>
+                                <p class="text-xs text-blue-200 mt-0.5 max-w-[200px] sm:max-w-xs">Acesso completo ao sistema e relatórios gerenciais</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-gray-300"></i>
+                    </button>
+
+                    <button onclick="abrirLogin('Funcionário')" class="w-full flex items-center justify-between p-5 bg-white dark:bg-gray-800 text-brandDarkBlue dark:text-white rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 hover:scale-[1.01] active:scale-[0.99] transition-all text-left">
+                        <div class="flex items-center gap-4">
+                            <div class="w-12 h-12 rounded-full bg-brandLightGreen flex items-center justify-center text-xl text-brandGreen">
+                                <i class="fas fa-user-tag"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-bold text-lg leading-tight text-brandDarkBlue dark:text-white">Funcionário</h3>
+                                <p class="text-xs text-gray-400 dark:text-gray-300 mt-0.5 max-w-[200px] sm:max-w-xs">Acesso às rotinas diárias e movimentações</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-brandDarkBlue dark:text-white"></i>
+                    </button>
+                </div>
+
+                <div class="w-full relative mt-auto pt-6 pb-4">
+                    <div class="flex justify-end pr-8 mb-[-12px]">
+                        <div class="flex flex-col items-center">
+                            <i class="fas fa-map-marker-alt text-brandGreen text-2xl animate-bounce"></i>
+                        </div>
+                    </div>
+                    <div class="border-t-2 border-dashed border-brandGreen/40 w-full absolute bottom-8 left-0 z-0"></div>
+                    <div class="flex items-center justify-center relative z-10">
+                        <div class="bg-brandDarkBlue text-white p-3 rounded-xl shadow-lg flex items-center gap-3">
+                            <i class="fas fa-truck text-2xl text-brandGreen"></i>
+                            <div class="text-[10px] font-bold tracking-wider uppercase">Logística Ativa</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-4 gap-1 bg-white dark:bg-gray-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm mt-4 w-full max-w-md mx-auto">
+                <div class="text-center">
+                    <i class="fas fa-clipboard-list text-brandDarkBlue dark:text-brandLightBlue mb-1"></i>
+                    <p class="text-[10px] font-bold text-gray-500 dark:text-gray-300">Organização</p>
+                </div>
+                <div class="text-center">
+                    <i class="fas fa-cubes text-brandDarkBlue dark:text-brandLightBlue mb-1"></i>
+                    <p class="text-[10px] font-bold text-gray-500 dark:text-gray-300">Controle</p>
+                </div>
+                <div class="text-center">
+                    <i class="fas fa-chart-bar text-brandDarkBlue dark:text-brandLightBlue mb-1"></i>
+                    <p class="text-[10px] font-bold text-gray-500 dark:text-gray-300">Relatórios</p>
+                </div>
+                <div class="text-center">
+                    <i class="fas fa-shield-alt text-brandDarkBlue dark:text-brandLightBlue mb-1"></i>
+                    <p class="text-[10px] font-bold text-gray-500 dark:text-gray-300">Segurança</p>
+                </div>
+            </div>`;
+        }
+
+        // ================= LOGIN =================
+        function abrirLogin(perfil) {
+            perfilGlobal = perfil;
+            salvarBanco();
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border border-gray-100 dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-2xl font-bold text-brandDarkBlue dark:text-white mb-1">Acesso ao Sistema</h2>
+                <p class="text-brandGreen dark:text-green-400 mb-6 font-semibold text-sm">Perfil: ${perfil}</p>
+                
+                <div id="mensagem-erro" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4 text-sm"></div>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Identificação da Unidade</label>
+                        <input id="escola" type="text" placeholder="Nome da Escola / Instituição" value="" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-brandDarkBlue">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Credenciais</label>
+                        <input id="email" type="email" placeholder="Email" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none mb-2">
+                        <input id="senha" type="password" placeholder="Senha" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none">
+                    </div>
+                    
+                    <button onclick="validarLogin()" class="w-full bg-brandDarkBlue hover:bg-opacity-95 text-white p-3 rounded-xl font-bold transition-all shadow-md">
+                        Entrar e Conectar Dados
+                    </button>
+                    <button onclick="abrirCadastro()" class="w-full text-brandDarkBlue dark:text-blue-400 text-sm font-semibold mt-2">Cadastre-se</button>
+                </div>
+                <button onclick="telaInicial()" class="mt-8 text-gray-400 flex items-center gap-2"><i class="fas fa-arrow-left"></i> Voltar</button>
+            </div>`;
+        }
+
+        function abrirCadastro() {
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg my-auto w-full max-w-md mx-auto">
+                <h2 class="text-2xl font-bold mb-6 text-brandDarkBlue dark:text-white">Cadastro</h2>
+                <input id="emailCad" type="email" placeholder="Novo Email" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white mb-4">
+                <input id="senhaCad" type="password" placeholder="Nova Senha" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white mb-4">
+                <button onclick="salvarCadastro()" class="w-full bg-brandGreen text-white p-3 rounded-xl font-bold">Salvar</button>
+            </div>`;
+        }
+
+        function salvarCadastro() {
+            usuarioCadastrado = document.getElementById('emailCad').value;
+            senhaCadastrada = document.getElementById('senhaCad').value;
+            salvarBanco();
+            mostrarMensagem('Cadastro concluído com sucesso!');
+            abrirLogin(perfilGlobal);
+        }
+
+        function validarLogin() {
+            const escola = document.getElementById('escola').value.trim();
+            const email = document.getElementById('email').value;
+            const senha = document.getElementById('senha').value;
+
+            if (!escola) {
+                document.getElementById('mensagem-erro').classList.remove('hidden');
+                document.getElementById('mensagem-erro').innerText = "Por favor, digite o nome da escola.";
+                return;
+            }
+
+            if ((email === usuarioCadastrado && senha === senhaCadastrada) || (email === 'admin@admin.com' && senha === '123') || perfilGlobal === 'Funcionário') {
+                schoolGlobal = escola; 
+                salvarBanco();
+                entrarSistema();
+            } else {
+                document.getElementById('mensagem-erro').classList.remove('hidden');
+                document.getElementById('mensagem-erro').innerText = "Dados de login incorretos.";
+            }
+        }
+
+        // ================= DASHBOARD =================
+        function entrarSistema() {
+            aplicarTema();
+            atualizarStatusProdutos();
+            const produtosCriticos = dbProdutos ? dbProdutos.filter(p => p.qtd <= limiteEstoqueBaixo) : [];
+            let bannerAlerta = '';
+            
+            if (produtosCriticos.length > 0 && notificacoesAtivas) {
+                bannerAlerta = `
+                <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-r-xl text-red-800 dark:bg-red-900/20 dark:text-red-300 flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <i class="fas fa-bell animate-bounce text-xl text-red-600"></i>
+                        <span class="text-sm font-medium">Aviso: <strong>${produtosCriticos.length} item(s)</strong> na lista crítica de estoque baixo!</span>
+                    </div>
+                    <button onclick="abrirTela('produtos')" class="text-xs uppercase font-bold underline">Ver Itens</button>
+                </div>`;
+            }
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex justify-between items-center mb-8 bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                    <div>
+                        <h1 class="text-xl sm:text-2xl font-bold flex items-center gap-2 text-brandDarkBlue dark:text-white truncate max-w-[220px] sm:max-w-none">
+                            <i class="fas fa-school text-brandGreen"></i> ${schoolGlobal.toUpperCase()}
+                        </h1>
+                        <p class="text-xs text-brandGreen font-medium">Operador: ${perfilGlobal}</p>
+                    </div>
+                    <button onclick="telaInicial()" class="text-red-600 font-bold hover:underline text-sm"><i class="fas fa-sign-out-alt"></i> Sair</button>
+                </div>
+                
+                ${bannerAlerta}
+                
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    <button onclick="abrirTela('produtos')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-boxes text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Produtos</h3><p class="text-xs text-gray-400">Ver e gerenciar estoque</p>
+                    </button>
+                    <button onclick="abrirTela('inventario')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-clipboard-check text-brandGreen text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Inventário</h3><p class="text-xs text-gray-400">Conferência rápida</p>
+                    </button>
+                    <button onclick="abrirModalMovimentacao()" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-sort-amount-up-alt text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Movimentar por Nome</h3><p class="text-xs text-gray-400">Entrada/Baixa rápida</p>
+                    </button>
+                    <button onclick="abrirTela('categories')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-tags text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Categorias</h3><p class="text-xs text-gray-400">Filtro ativo por divisão</p>
+                    </button>
+                    <button onclick="abrirTela('fornecedores')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-truck text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Fornecedores</h3><p class="text-xs text-gray-400">Lista de parceiros</p>
+                    </button>
+                    <button onclick="abrirTela('movimentacoes')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-exchange-alt text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Movimentações</h3><p class="text-xs text-gray-400">Histórico de entradas/saídas</p>
+                    </button>
+                    <button onclick="abrirTela('relatorios')" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left">
+                        <i class="fas fa-chart-line text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Relatórios</h3><p class="text-xs text-gray-400">Balanços e exportação</p>
+                    </button>
+                    <button onclick="${perfilGlobal === 'Gestor' ? "abrirTela('configuracoes')" : "alert('❌ Acesso Restrito: Apenas o Gestor pode alterar as configurações.')"}" class="bg-white dark:bg-gray-800 p-5 sm:p-6 rounded-2xl shadow-sm border border-transparent hover:border-brandGreen transition-all text-left ${perfilGlobal !== 'Gestor' ? 'opacity-60 cursor-not-allowed' : ''}">
+                        <i class="fas fa-cog text-brandDarkBlue dark:text-blue-400 text-2xl mb-2"></i>
+                        <h3 class="font-bold text-sm sm:text-base">Configurações ${perfilGlobal !== 'Gestor' ? '🔒' : ''}</h3><p class="text-xs text-gray-400">Parâmetros de controle</p>
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        function abrirTela(tela) {
+            if (tela === 'produtos') renderizarProdutos();
+            else if (tela === 'inventario') renderizarInventario(0);
+            else if (tela === 'categories') renderizarCategorias();
+            else if (tela === 'fornecedores') renderizarFornecedores();
+            else if (tela === 'movimentacoes') renderizarMovimentacoes();
+            else if (tela === 'relatorios') renderizarRelatorios();
+            else if (tela === 'configuracoes') renderizarConfiguracoes();
+        }
+
+        // ================= INVENTÁRIO (CONFERÊNCIA INDIVIDUAL COM DIVERGÊNCIA) =================
+        function renderizarInventario(index = 0) {
+            if (!dbProdutos || dbProdutos.length === 0) {
+                document.getElementById("app").innerHTML = `
+                <div class="fade-in bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto text-center">
+                    <i class="fas fa-box-open text-5xl text-gray-300 dark:text-gray-600 mb-4"></i>
+                    <h2 class="text-2xl font-bold mb-2 text-brandDarkBlue dark:text-white">Nenhum produto cadastrado</h2>
+                    <p class="text-gray-400 text-sm mb-6">Cadastre produtos no estoque antes de iniciar a conferência do inventário.</p>
+                    <button onclick="entrarSistema()" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold">Voltar ao Menu</button>
+                </div>`;
+                return;
+            }
+
+            if (index >= dbProdutos.length) {
+                document.getElementById("app").innerHTML = `
+                <div class="fade-in bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto text-center">
+                    <i class="fas fa-check-circle text-5xl text-brandGreen mb-4"></i>
+                    <h2 class="text-2xl font-bold mb-2 text-brandDarkBlue dark:text-white">Inventário Concluído!</h2>
+                    <p class="text-gray-400 text-sm mb-6">Todos os produtos cadastrados foram conferidos com sucesso.</p>
+                    <button onclick="entrarSistema()" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold shadow-md">Voltar ao Menu</button>
+                </div>`;
+                return;
+            }
+
+            const prod = dbProdutos[index];
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-lg border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <div class="flex justify-between items-center mb-4">
+                    <span class="text-xs font-bold uppercase tracking-wider text-brandGreen bg-brandLightGreen dark:bg-green-900/30 px-3 py-1 rounded-full">
+                        Item ${index + 1} de ${dbProdutos.length}
+                    </span>
+                    <button onclick="entrarSistema()" class="text-gray-400 hover:text-gray-600 text-sm font-bold">Sair</button>
+                </div>
+
+                <div class="text-center my-6">
+                    <p class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">${prod.categoria || 'Sem Categoria'}</p>
+                    <h1 class="text-3xl font-extrabold text-brandDarkBlue dark:text-white mb-4 leading-tight">${prod.nome}</h1>
+                    
+                    <div class="bg-gray-50 dark:bg-gray-700/50 p-6 rounded-2xl border dark:border-gray-700 mb-6">
+                        <p class="text-xs uppercase font-bold text-gray-400 mb-1">Quantidade Registrada no Sistema</p>
+                        <span class="text-5xl font-black text-brandDarkBlue dark:text-blue-400">${prod.qtd}</span>
+                        <span class="text-lg font-bold text-gray-500 dark:text-gray-400 ml-1">un.</span>
+                    </div>
+
+                    <p class="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-6">A quantidade física encontrada no local é exatamente esta?</p>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <button onclick="confirmarQuantidadeBate(${index})" class="bg-brandGreen hover:bg-opacity-90 text-white p-4 rounded-2xl font-bold shadow-md flex items-center justify-center gap-2 text-base">
+                            <i class="fas fa-check text-lg"></i> Sim, bate!
+                        </button>
+                        <button onclick="abrirTelaAjusteDivergencia(${index})" class="bg-red-600 hover:bg-opacity-90 text-white p-4 rounded-2xl font-bold shadow-md flex items-center justify-center gap-2 text-base">
+                            <i class="fas fa-times text-lg"></i> Não bate!
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function confirmarQuantidadeBate(index) {
+            renderizarInventario(index + 1);
+        }
+
+        function abrirTelaAjusteDivergencia(index) {
+            const prod = dbProdutos[index];
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-lg border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <div class="flex items-center gap-2 mb-2 text-red-500 font-bold text-sm uppercase">
+                    <i class="fas fa-exclamation-triangle"></i> Registro de Divergência
+                </div>
+                <h1 class="text-2xl font-bold text-brandDarkBlue dark:text-white mb-1">${prod.nome}</h1>
+                <p class="text-xs text-gray-400 mb-6">Quantidade atual no sistema: <strong>${prod.qtd} un.</strong></p>
+
+                <div class="space-y-4 mb-6">
+                    <div>
+                        <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Quantidade Real Encontrada (Física)</label>
+                        <input id="invQtdFisica" type="number" min="0" placeholder="Ex: 10" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white font-bold text-lg outline-none focus:ring-2 focus:ring-brandDarkBlue">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Motivo da Diferença / Quem pegou?</label>
+                        <textarea id="invMotivo" rows="3" placeholder="Ex: Professor João pegou 10 notebooks para aula prática" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white text-sm outline-none focus:ring-2 focus:ring-brandDarkBlue"></textarea>
+                    </div>
+                </div>
+
+                <button onclick="salvarDivergenciaInventario(${index})" class="w-full bg-brandDarkBlue text-white p-3.5 rounded-xl font-bold shadow-md hover:bg-opacity-95">
+                    Atualizar Estoque e Continuar
+                </button>
+                <button onclick="renderizarInventario(${index})" class="w-full mt-2 text-gray-400 font-semibold text-sm">Cancelar</button>
+            </div>`;
+        }
+
+        function salvarDivergenciaInventario(index) {
+            const prod = dbProdutos[index];
+            const inputQtd = document.getElementById('invQtdFisica').value;
+            const motivo = document.getElementById('invMotivo').value.trim();
+
+            if (inputQtd === '' || isNaN(inputQtd) || parseInt(inputQtd) < 0) {
+                mostrarMensagem('Por favor, informe uma quantidade física válida.');
+                return;
+            }
+
+            if (!motivo) {
+                mostrarMensagem('Por favor, descreva o motivo da diferença (ex: nome de quem retirou ou justificativa).');
+                return;
+            }
+
+            const qtdFisica = parseInt(inputQtd);
+            const diferenca = qtdFisica - prod.qtd;
+            const detalheDiferenca = diferenca < 0 ? `Retirado: ${Math.abs(diferenca)} un` : `Entrada/Sobra: +${diferenca} un`;
+
+            dbMovimentacoes.push({
+                tipo: `Inventário (${detalheDiferenca})`,
+                produto: `${prod.nome} | Motivo: ${motivo}`,
+                qtd: qtdFisica,
+                data: new Date().toLocaleDateString('pt-BR')
+            });
+
+            prod.qtd = qtdFisica;
+            atualizarStatusProdutos();
+            salvarBanco();
+
+            mostrarMensagem(`Estoque de "${prod.nome}" atualizado para ${qtdFisica} un. e registrado nas movimentações!`);
+            renderizarInventario(index + 1);
+        }
+
+        // ================= PRODUTOS =================
+        function renderizarProdutos(filtroCategoria = null) {
+            atualizarStatusProdutos();
+            let lista = dbProdutos;
+            if(filtroCategoria) {
+                lista = dbProdutos.filter(p => p.categoria === filtroCategoria);
+            }
+
+            let linhas = '';
+            if (lista && lista.length > 0) {
+                linhas = lista.map((p, index) => `
+                    <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">
+                        <td class="p-4 font-semibold">
+                            ${p.nome} 
+                            <span class="block text-xs text-brandLightBlue dark:text-blue-400 font-normal italic">${p.categoria || 'Sem Categoria'}</span>
+                        </td>
+                        <td class="p-4">${p.qtd} un</td>
+                        <td class="p-4"><span class="bg-${p.statusCor}-100 text-${p.statusCor}-700 dark:bg-${p.statusCor}-900/30 dark:text-${p.statusCor}-400 px-2.5 py-1 rounded-lg text-xs font-bold">${p.status}</span></td>
+                        <td class="p-4 text-right space-x-3 whitespace-nowrap">
+                            <button onclick="abrirFormProd(${index})" class="text-orange-500 font-bold hover:underline">Editar</button>
+                            ${perfilGlobal === 'Gestor' ? `<button onclick="excluirProd(${index})" class="text-red-500 font-bold hover:underline">Excluir</button>` : ''}
+                        </td>
+                    </tr>
+                `).join('');
+            }
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-brandDarkBlue dark:text-white">Estoque ${filtroCategoria ? `- ${filtroCategoria}` : ''}</h1>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <button onclick="abrirModalMovimentacao()" class="bg-brandDarkBlue hover:bg-opacity-95 text-white p-3 px-4 rounded-xl font-bold flex items-center justify-center gap-2 text-sm shadow-sm">
+                            <i class="fas fa-sync-alt text-brandGreen"></i> Entrada/Baixa
+                        </button>
+                        <label class="bg-brandDarkBlue hover:bg-opacity-95 text-white p-3 px-4 rounded-xl font-bold flex items-center justify-center gap-2 text-sm cursor-pointer shadow-sm">
+                            <i class="fas fa-camera text-brandGreen"></i> Foto
+                            <input type="file" accept="image/*" capture="environment" onchange="processarFotoLista(event)" class="hidden">
+                        </label>
+                        <div class="flex gap-2">
+                            <button onclick="abrirFormProd()" class="bg-brandGreen hover:bg-opacity-95 text-white p-3 px-4 rounded-xl font-bold text-sm">+ Manual</button>
+                            <button onclick="entrarSistema()" class="bg-gray-200 dark:bg-gray-700 px-4 rounded-xl font-bold text-sm">Voltar</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="loading-ocr" class="hidden bg-white dark:bg-gray-800 p-6 rounded-2xl border dark:border-gray-700 mb-6 text-center shadow-sm">
+                    <i class="fas fa-circle-notch animate-spin text-brandGreen text-4xl mb-3"></i>
+                    <p class="font-bold text-lg">Analisando sua lista de itens...</p>
+                </div>
+
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 responsive-table">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100 dark:bg-gray-700 border-b dark:border-gray-600 text-gray-500 dark:text-gray-300 text-xs font-bold uppercase">
+                                <th class="p-4">Produto</th><th class="p-4">Qtd</th><th class="p-4">Status</th><th class="p-4 text-right">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>${linhas || '<tr><td colspan="4" class="p-8 text-center text-gray-400 text-sm italic">Nenhum produto cadastrado ainda.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        async function processarFotoLista(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const loader = document.getElementById("loading-ocr");
+            loader.classList.remove("hidden");
+
+            try {
+                const resultado = await Tesseract.recognize(file, 'por', { logger: m => console.log(m) });
+                const textoExtraido = resultado.data.text;
+                const linhas = textoExtraido.split("\n");
+                let itensAdicionadosCount = 0;
+
+                linhas.forEach(linha => {
+                    linha = linha.trim();
+                    if (!linha) return;
+
+                    const numerosEncontrados = linha.match(/\d+/);
+                    if (numerosEncontrados) {
+                        const qtd = parseInt(numerosEncontrados[0]);
+                        let nome = linha.replace(numerosEncontrados[0], "").replace(/[-_=:;]/g, "").trim();
+
+                        if (nome.length >= 2) {
+                            nome = nome.charAt(0).toUpperCase() + nome.slice(1);
+                            const status = qtd > limiteEstoqueBaixo ? 'OK' : 'Baixo';
+                            const statusCor = qtd > limiteEstoqueBaixo ? 'green' : 'red';
+
+                            dbProdutos.push({ nome, qtd, status, statusCor, categoria: "Sem Categoria" });
+                            dbMovimentacoes.push({
+                                tipo: 'Adicionado (Foto)',
+                                produto: nome,
+                                qtd: qtd,
+                                data: new Date().toLocaleDateString('pt-BR')
+                            });
+                            itensAdicionadosCount++;
+                        }
+                    }
+                });
+
+                salvarBanco();
+                loader.classList.add("hidden");
+                
+                if (itensAdicionadosCount > 0) {
+                    mostrarMensagem(`${itensAdicionadosCount} produto(s) adicionado(s) com sucesso!`);
+                } else {
+                    mostrarMensagem('Não foi possível identificar os produtos da imagem.');
+                }
+                renderizarProdutos();
+            } catch (error) {
+                loader.classList.add("hidden");
+                mostrarMensagem('Erro ao processar a imagem.');
+                console.error(error);
+            }
+        }
+
+        function abrirFormProd(index = null) {
+            const p = (index !== null && dbProdutos[index]) ? dbProdutos[index] : { nome: '', qtd: '', categoria: '' };
+            const opcoesCategorias = dbCategorias.map(cat => `
+                <option value="${cat.nome}" ${p.categoria === cat.nome ? 'selected' : ''}>${cat.nome}</option>
+            `).join('');
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-xl font-bold mb-6 text-brandDarkBlue dark:text-white">${index !== null ? 'Editar' : 'Adicionar'} Produto</h2>
+                
+                <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Nome do Item</label>
+                <input id="pNome" placeholder="Ex: Notebook Positivo" value="${p.nome}" class="w-full p-3 border rounded-xl mb-3 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                
+                <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Quantidade</label>
+                <input id="pQtd" type="number" placeholder="Quantidade" value="${p.qtd}" class="w-full p-3 border rounded-xl mb-3 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                
+                <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Categoria</label>
+                <select id="pCategoria" class="w-full p-3 border rounded-xl mb-6 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                    <option value="">Selecione uma Categoria</option>
+                    ${opcoesCategorias}
+                </select>
+
+                <button onclick="salvarProd(${index})" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold shadow-md">Salvar</button>
+                <button onclick="renderizarProdutos()" class="w-full mt-2 text-gray-400">Cancelar</button>
+            </div>`;
+        }
+
+        function salvarProd(index) {
+            const n = document.getElementById('pNome').value.trim();
+            const q = parseInt(document.getElementById('pQtd').value);
+            const c = document.getElementById('pCategoria').value;
+            if (!n || isNaN(q)) { mostrarMensagem('Preencha todos os campos corretamente.'); return; }
+
+            const status = q > limiteEstoqueBaixo ? 'OK' : 'Baixo';
+            const statusCor = q > limiteEstoqueBaixo ? 'green' : 'red';
+            
+            if (index !== null && dbProdutos[index]) {
+                const qtdAntiga = dbProdutos[index].qtd;
+                const diferenca = q - qtdAntiga;
+                
+                dbProdutos[index] = { nome: n, qtd: q, status, statusCor, categoria: c };
+
+                if (diferenca > 0) {
+                    dbMovimentacoes.push({ tipo: 'Adicionado', produto: n, qtd: diferenca, data: new Date().toLocaleDateString('pt-BR') });
+                } else if (diferenca < 0) {
+                    dbMovimentacoes.push({ tipo: 'Retirado', produto: n, qtd: Math.abs(diferenca), data: new Date().toLocaleDateString('pt-BR') });
+                }
+            } else {
+                dbProdutos.push({ nome: n, qtd: q, status, statusCor, categoria: c });
+                dbMovimentacoes.push({ tipo: 'Cadastro Inicial', produto: n, qtd: q, data: new Date().toLocaleDateString('pt-BR') });
+            }
+
+            salvarBanco();
+            mostrarMensagem(index !== null ? 'Produto atualizado com sucesso!' : 'Produto adicionado com sucesso!');
+            renderizarProdutos();
+        }
+
+        function excluirProd(index) { 
+            if(confirm("Deseja realmente excluir este item?")) { 
+                const p = dbProdutos[index];
+                dbMovimentacoes.push({ tipo: 'Retirado (Exclusão)', produto: p.nome, qtd: p.qtd, data: new Date().toLocaleDateString('pt-BR') });
+                dbProdutos.splice(index, 1); 
+                salvarBanco();
+                mostrarMensagem('Produto excluído com sucesso!');
+                renderizarProdutos(); 
+            } 
+        }
+
+        // ================= CATEGORIAS =================
+        function renderizarCategorias() {
+            let lista = dbCategorias.map((c, i) => `
+                <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">
+                    <td class="p-4 font-semibold">${c.nome}</td>
+                    <td class="p-4 text-right space-x-2">
+                        <button onclick="renderizarProdutos('${c.nome}')" class="text-brandLightBlue dark:text-blue-400 font-bold hover:underline">Ver Itens</button>
+                        ${perfilGlobal === 'Gestor' ? `<button onclick="excluirCategoria(${i})" class="text-red-500 font-bold hover:underline">Excluir</button>` : ''}
+                    </td>
+                </tr>
+            `).join('');
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex justify-between items-center mb-6">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-brandDarkBlue dark:text-white">Categorias</h1>
+                    <div class="flex gap-2">
+                        <button onclick="abrirFormCategoria()" class="bg-brandGreen text-white p-3 px-4 rounded-xl font-bold text-sm">+ Categoria</button>
+                        <button onclick="entrarSistema()" class="bg-gray-200 dark:bg-gray-700 px-4 rounded-xl font-bold text-sm">Voltar</button>
+                    </div>
+                </div>
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 responsive-table">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100 dark:bg-gray-700 border-b dark:border-gray-600 text-gray-500 dark:text-gray-300 text-xs font-bold uppercase">
+                                <th class="p-4">Nome da Categoria</th><th class="p-4 text-right">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>${lista || '<tr><td colspan="2" class="p-8 text-center text-gray-400 text-sm italic">Nenhuma categoria cadastrada.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function abrirFormCategoria() {
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-xl font-bold mb-4 text-brandDarkBlue dark:text-white">Nova Categoria</h2>
+                <input id="catNome" placeholder="Nome da Categoria" class="w-full p-3 border rounded-xl mb-4 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                <button onclick="salvarCategoria()" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold shadow-md">Salvar</button>
+                <button onclick="renderizarCategorias()" class="w-full mt-2 text-gray-400">Cancelar</button>
+            </div>`;
+        }
+
+        function salvarCategoria() {
+            const nome = document.getElementById('catNome').value.trim();
+            if (!nome) { mostrarMensagem('Informe o nome da categoria.'); return; }
+            dbCategorias.push({ nome });
+            salvarBanco();
+            mostrarMensagem('Categoria criada com sucesso!');
+            renderizarCategorias();
+        }
+
+        function excluirCategoria(index) {
+            if (confirm("Excluir esta categoria?")) {
+                dbCategorias.splice(index, 1);
+                salvarBanco();
+                renderizarCategorias();
+            }
+        }
+
+        // ================= FORNECEDORES =================
+        function renderizarFornecedores() {
+            let lista = dbFornecedores.map((f, i) => `
+                <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">
+                    <td class="p-4 font-semibold">${f.nome}</td>
+                    <td class="p-4">${f.contato || '-'}</td>
+                    <td class="p-4 text-right">
+                        ${perfilGlobal === 'Gestor' ? `<button onclick="excluirFornecedor(${i})" class="text-red-500 font-bold hover:underline">Excluir</button>` : '-'}
+                    </td>
+                </tr>
+            `).join('');
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex justify-between items-center mb-6">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-brandDarkBlue dark:text-white">Fornecedores</h1>
+                    <div class="flex gap-2">
+                        <button onclick="abrirFormFornecedor()" class="bg-brandGreen text-white p-3 px-4 rounded-xl font-bold text-sm">+ Fornecedor</button>
+                        <button onclick="entrarSistema()" class="bg-gray-200 dark:bg-gray-700 px-4 rounded-xl font-bold text-sm">Voltar</button>
+                    </div>
+                </div>
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 responsive-table">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100 dark:bg-gray-700 border-b dark:border-gray-600 text-gray-500 dark:text-gray-300 text-xs font-bold uppercase">
+                                <th class="p-4">Nome</th><th class="p-4">Contato</th><th class="p-4 text-right">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>${lista || '<tr><td colspan="3" class="p-8 text-center text-gray-400 text-sm italic">Nenhum fornecedor cadastrado.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function abrirFormFornecedor() {
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-xl font-bold mb-4 text-brandDarkBlue dark:text-white">Novo Fornecedor</h2>
+                <input id="fornNome" placeholder="Nome do Fornecedor" class="w-full p-3 border rounded-xl mb-3 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                <input id="fornContato" placeholder="Telefone/Email" class="w-full p-3 border rounded-xl mb-4 bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                <button onclick="salvarFornecedor()" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold shadow-md">Salvar</button>
+                <button onclick="renderizarFornecedores()" class="w-full mt-2 text-gray-400">Cancelar</button>
+            </div>`;
+        }
+
+        function salvarFornecedor() {
+            const nome = document.getElementById('fornNome').value.trim();
+            const contato = document.getElementById('fornContato').value.trim();
+            if (!nome) { mostrarMensagem('Informe o nome do fornecedor.'); return; }
+            dbFornecedores.push({ nome, contato });
+            salvarBanco();
+            mostrarMensagem('Fornecedor cadastrado com sucesso!');
+            renderizarFornecedores();
+        }
+
+        function excluirFornecedor(index) {
+            if (confirm("Excluir este fornecedor?")) {
+                dbFornecedores.splice(index, 1);
+                salvarBanco();
+                renderizarFornecedores();
+            }
+        }
+
+        // ================= MOVIMENTAÇÕES =================
+        function renderizarMovimentacoes() {
+            let lista = dbMovimentacoes.slice().reverse().map(m => `
+                <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">
+                    <td class="p-4"><span class="font-bold ${m.tipo.includes('Adicionado') || m.tipo.includes('Entrada') || m.tipo.includes('Sobra') ? 'text-green-600' : 'text-red-500'}">${m.tipo}</span></td>
+                    <td class="p-4 font-semibold">${m.produto}</td>
+                    <td class="p-4">${m.qtd} un</td>
+                    <td class="p-4 text-xs text-gray-400">${m.data}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex justify-between items-center mb-6">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-brandDarkBlue dark:text-white">Histórico de Movimentações</h1>
+                    <button onclick="entrarSistema()" class="bg-gray-200 dark:bg-gray-700 px-4 py-2 rounded-xl font-bold text-sm">Voltar</button>
+                </div>
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 responsive-table">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100 dark:bg-gray-700 border-b dark:border-gray-600 text-gray-500 dark:text-gray-300 text-xs font-bold uppercase">
+                                <th class="p-4">Tipo</th><th class="p-4">Produto / Motivo</th><th class="p-4">Qtd</th><th class="p-4">Data</th>
+                            </tr>
+                        </thead>
+                        <tbody>${lista || '<tr><td colspan="4" class="p-8 text-center text-gray-400 text-sm italic">Nenhuma movimentação registrada.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        // ================= RELATÓRIOS =================
+        function renderizarRelatorios() {
+            const totalProdutos = dbProdutos.length;
+            const itensEstoqueBaixo = dbProdutos.filter(p => p.qtd <= limiteEstoqueBaixo).length;
+            const totalItens = dbProdutos.reduce((acc, p) => acc + p.qtd, 0);
+
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in w-full">
+                <div class="flex justify-between items-center mb-6">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-brandDarkBlue dark:text-white">Relatórios e Balanço</h1>
+                    <div class="flex gap-2">
+                        <button onclick="window.print()" class="bg-brandDarkBlue text-white p-3 px-4 rounded-xl font-bold text-sm"><i class="fas fa-print mr-1"></i> Imprimir</button>
+                        <button onclick="entrarSistema()" class="bg-gray-200 dark:bg-gray-700 px-4 rounded-xl font-bold text-sm">Voltar</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                    <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl border dark:border-gray-700 shadow-sm">
+                        <p class="text-xs text-gray-400 font-bold uppercase">Tipos de Produtos</p>
+                        <h2 class="text-3xl font-extrabold text-brandDarkBlue dark:text-white mt-1">${totalProdutos}</h2>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl border dark:border-gray-700 shadow-sm">
+                        <p class="text-xs text-gray-400 font-bold uppercase">Total de Itens Físicos</p>
+                        <h2 class="text-3xl font-extrabold text-brandGreen mt-1">${totalItens}</h2>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl border dark:border-gray-700 shadow-sm">
+                        <p class="text-xs text-gray-400 font-bold uppercase">Alertas Críticos</p>
+                        <h2 class="text-3xl font-extrabold text-red-500 mt-1">${itensEstoqueBaixo}</h2>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        // ================= CONFIGURAÇÕES =================
+        function renderizarConfiguracoes() {
+            document.getElementById("app").innerHTML = `
+            <div class="fade-in bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-3xl shadow-md border dark:border-gray-700 my-auto w-full max-w-md mx-auto">
+                <h2 class="text-xl font-bold mb-6 text-brandDarkBlue dark:text-white">Configurações do Sistema</h2>
+                
+                <div class="space-y-4 mb-6">
+                    <div>
+                        <label class="block text-xs font-bold uppercase mb-1 text-gray-400">Limite para Alerta de Estoque Baixo</label>
+                        <input id="cfgLimite" type="number" value="${limiteEstoqueBaixo}" class="w-full p-3 border rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-800 dark:text-white outline-none">
+                    </div>
+
+                    <div class="flex items-center justify-between p-3 border rounded-xl bg-gray-50 dark:bg-gray-700">
+                        <span class="text-sm font-semibold">Modo Escuro</span>
+                        <button onclick="toggleTema()" class="text-xs bg-brandDarkBlue text-white px-3 py-1.5 rounded-lg font-bold">
+                            ${modoEscuroAtivo ? 'Desativar' : 'Ativar'}
+                        </button>
+                    </div>
+                </div>
+
+                <button onclick="salvarConfiguracoes()" class="w-full bg-brandDarkBlue text-white p-3 rounded-xl font-bold shadow-md">Salvar Alterações</button>
+                <button onclick="entrarSistema()" class="w-full mt-2 text-gray-400 font-semibold">Voltar</button>
+            </div>`;
+        }
+
+        function salvarConfiguracoes() {
+            const lim = parseInt(document.getElementById('cfgLimite').value);
+            if (!isNaN(lim) && lim >= 0) {
+                limiteEstoqueBaixo = lim;
+                salvarBanco();
+                mostrarMensagem('Configurações salvas!');
+                entrarSistema();
+            } else {
+                mostrarMensagem('Informe um número válido para o limite.');
+            }
+        }
+
+        // Inicialização
+        telaInicial();
+    </script>
+</body>
+</html>
